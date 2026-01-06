@@ -1,16 +1,17 @@
 # Description: 一个主动对话插件，当用户长时间不回复时主动发送消息
-from astrbot.api.provider import ProviderRequest
-from astrbot.api.star import Context, register, Star
-from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api import AstrBotConfig, logger
 import asyncio
+import datetime
 import os
 import pathlib
-import datetime
+
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star, register
+
+from .core.ai_daily_schedule import AIDailySchedule
 from .core.daily_greetings import DailyGreetings
 from .core.initiative_dialogue_core import InitiativeDialogueCore
 from .core.random_daily_activities import RandomDailyActivities
-from .core.ai_daily_schedule import AIDailySchedule
 from .utils.data_loader import DataLoader
 from .utils.festival_detector import FestivalDetector
 
@@ -41,10 +42,10 @@ class InitiativeDialogue(Star):
 
         # 初始化核心对话模块
         self.dialogue_core = InitiativeDialogueCore(self, self)
-        
+
         # 初始化节日检测器
         self.festival_detector = FestivalDetector.get_instance(self)
-        
+
         # 检查今天是否是节日
         festival_info = self.festival_detector.get_festival_info()
         if festival_info:
@@ -55,7 +56,7 @@ class InitiativeDialogue(Star):
 
         # 初始化随机日常模块
         self.random_daily = RandomDailyActivities(self)
-        
+
         # 初始化AI日程安排模块
         self.ai_schedule = AIDailySchedule(self)
 
@@ -71,37 +72,37 @@ class InitiativeDialogue(Star):
             f"活动时间: {self.dialogue_core.activity_start_hour}点-{self.dialogue_core.activity_end_hour}点, "
             f"最大连续消息数: {self.dialogue_core.max_consecutive_messages}条"
         )
-        
+
         # 添加白名单信息日志
         logger.info(
             f"白名单功能状态: {'启用' if self.dialogue_core.whitelist_enabled else '禁用'}, "
             f"白名单用户数量: {len(self.dialogue_core.whitelist_users)}"
         )
-        
+
         # 添加日常分享设置日志
         logger.info(
             f"随机日常分享状态: {'启用' if self.random_daily.sharing_enabled else '禁用'}, "
             f"最小间隔: {self.random_daily.min_interval_minutes}分钟, "
             f"最大延迟: {self.random_daily.sharing_max_delay_seconds}秒"
         )
-        
+
         # 添加每日问候设置日志
         logger.info(
             f"每日问候状态: {'启用' if self.daily_greetings.enabled else '禁用'}, "
             f"早安时间: {self.daily_greetings.morning_hour}:{self.daily_greetings.morning_minute:02d}, "
             f"晚安时间: {self.daily_greetings.night_hour}:{self.daily_greetings.night_minute:02d}"
         )
-        
+
         # 添加AI日程安排设置日志
         schedule_settings = self.config.get("schedule_settings", {})
         logger.info(
             f"AI日程安排状态: {'启用' if self.ai_schedule.enabled else '禁用'}, "
             f"生成时间: {self.ai_schedule.schedule_generation_hour}:{self.ai_schedule.schedule_generation_minute:02d}"
         )
-        
+
         # 添加节日检测信息
-        festival_config = self.config.get('festival_settings', {})
-        festival_enabled = festival_config.get('enabled', True)
+        festival_config = self.config.get("festival_settings", {})
+        festival_enabled = festival_config.get("enabled", True)
         logger.info(
             f"节日检测状态: {'启用' if festival_enabled else '禁用'}, "
             f"优先使用节日提示词: {'是' if festival_config.get('prioritize_festival', True) else '否'}"
@@ -118,7 +119,7 @@ class InitiativeDialogue(Star):
 
         # 启动随机日常任务
         asyncio.create_task(self.random_daily.start())
-        
+
         # 启动AI日程安排任务
         asyncio.create_task(self.ai_schedule.start())
 
@@ -127,39 +128,60 @@ class InitiativeDialogue(Star):
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def on_private_message(self, event: AstrMessageEvent):
         """处理私聊消息"""
-        user_id = str(event.get_sender_id())
-        message_str = event.message_str
 
-        # 检查消息是否包含系统提示词标记
-        if "[SYS_PROMPT]" in message_str:
-            logger.debug(f"检测到系统提示词消息，跳过计数重置: {message_str[:50]}...")
+        # 1. 过滤空消息
+        # 很多适配器在用户“点击对话框”或“标记已读”时会上报空内容的 Message 事件
+        # 这是导致计数器在未回复时重置的主要原因
+        if not event.message_str or not event.message_str.strip():
+            # logger.debug(f"[主动对话] 忽略空内容事件 (Sender: {event.get_sender_id()})")
             return
-            
+
+        # 2. 过滤 Bot 自己发送的消息 (Echo)
+        sender_id = str(event.get_sender_id())
+        self_id = None
+        try:
+            # 尝试获取 Self ID
+            if hasattr(event, "message_obj") and hasattr(event.message_obj, "self_id"):
+                self_id = str(event.message_obj.self_id)
+        except:
+            pass
+
+        if self_id and sender_id == self_id:
+            logger.debug("[主动对话] 忽略 Bot 自己的消息")
+            return
+
+        # 3. 过滤系统提示词标记 (兼容新旧逻辑)
+        if "[SYS_PROMPT]" in event.message_str or "[系统指令:" in event.message_str:
+            return
+        user_id = str(event.get_sender_id())
+
         # 委托给核心模块处理
         await self.dialogue_core.handle_user_message(user_id, event)
-        
+
         # 调试日志，查看当前计数
         current_count = self.dialogue_core.consecutive_message_count.get(user_id, 0)
         logger.debug(f"用户 {user_id} 当前计数为 {current_count}")
-        
+
         # 如果用户曾收到过主动消息，这里直接处理重置计数逻辑
         if user_id in self.dialogue_core.users_received_initiative:
             old_count = self.dialogue_core.consecutive_message_count.get(user_id, 0)
             self.dialogue_core.consecutive_message_count[user_id] = 0
-            
+
             # 同时也重置last_initiative_types中的计数
             if user_id in self.dialogue_core.last_initiative_types:
                 old_info = self.dialogue_core.last_initiative_types[user_id]
                 old_info["count"] = 0
                 self.dialogue_core.last_initiative_types[user_id] = old_info
-            
-            logger.info(f"用户 {user_id} 已回复消息，计数从 {old_count} 重置为 0")
-            
+
+            logger.info(
+                f"[主动对话] 用户 {user_id} 已有效回复，计数从 {old_count} 重置为 0"
+            )
+
             # 移除标记，表示已处理该回复
             self.dialogue_core.users_received_initiative.discard(user_id)
-            
+
             # 立即保存数据以确保计数重置被保存
-            if hasattr(self, 'data_loader'):
+            if hasattr(self, "data_loader"):
                 try:
                     self.data_loader.save_data_to_storage()
                     logger.info(f"用户 {user_id} 计数重置后数据已保存")
@@ -188,7 +210,7 @@ class InitiativeDialogue(Star):
 
         # 停止随机日常任务
         await self.random_daily.stop()
-        
+
         # 停止AI日程安排任务
         await self.ai_schedule.stop()
 
@@ -218,19 +240,19 @@ class InitiativeDialogue(Star):
             message_type="测试",
             time_period=time_period,
         )
-    
+
     @filter.command("generate_schedule")
     async def generate_ai_schedule(self, event: AstrMessageEvent):
         """手动生成AI日程安排（仅管理员）"""
         if not event.is_admin():
             yield event.plain_result("只有管理员可以使用此命令")
             return
-            
+
         yield event.plain_result("正在为所有用户生成AI日程安排...")
-        
+
         # 手动触发日程生成
         await self.ai_schedule.generate_daily_schedules_for_all_users()
-        
+
         yield event.plain_result("AI日程安排生成完成")
 
     @filter.command("check_festival")
@@ -239,7 +261,7 @@ class InitiativeDialogue(Star):
         if not event.is_admin():
             yield event.plain_result("只有管理员可以使用此命令")
             return
-            
+
         festival_info = self.festival_detector.get_festival_info()
         if festival_info:
             result = f"今天是 {festival_info['name']}！\n"
@@ -248,20 +270,20 @@ class InitiativeDialogue(Star):
             yield event.plain_result(result)
         else:
             yield event.plain_result("今天不是特殊节日")
-            
+
     @filter.command("check_schedule")
     async def check_ai_schedule(self, event: AstrMessageEvent):
         """查看当前AI日程安排（仅管理员）"""
         if not event.is_admin():
             yield event.plain_result("只有管理员可以使用此命令")
             return
-            
+
         today_str = datetime.datetime.now().date().isoformat()
-        
+
         # 检查是否有今日日程安排
         if today_str in self.ai_schedule.schedules:
             schedule = self.ai_schedule.schedules[today_str]
-            result = f"今日AI日程安排：\n"
+            result = "今日AI日程安排：\n"
             result += f"早上(6-8点): {schedule.get('morning', '无安排')}\n"
             result += f"上午(8-11点): {schedule.get('forenoon', '无安排')}\n"
             result += f"午饭(11-13点): {schedule.get('lunch', '无安排')}\n"
@@ -271,4 +293,6 @@ class InitiativeDialogue(Star):
             result += f"深夜(23-6点): {schedule.get('night', '无安排')}\n"
             yield event.plain_result(result)
         else:
-            yield event.plain_result("当前没有AI日程安排，请使用 generate_schedule 命令生成")
+            yield event.plain_result(
+                "当前没有AI日程安排，请使用 generate_schedule 命令生成"
+            )
