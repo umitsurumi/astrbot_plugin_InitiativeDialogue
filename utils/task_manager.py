@@ -1,12 +1,11 @@
 # 任务管理器 - 处理异步任务的创建和管理
 
 import asyncio
-import logging
 import datetime
+from astrbot.api import logger
 import random
-from typing import Callable, Dict, Any, Optional
-
-logger = logging.getLogger("task_manager")
+from collections.abc import Callable
+from typing import Any
 
 
 class TaskManager:

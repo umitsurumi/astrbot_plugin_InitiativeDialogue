@@ -1,32 +1,24 @@
-# 消息管理器 - 处理消息生成和发送逻辑
-
+# 修复版 v3 (最终版): astrbot_plugin_initiativedialogue/utils/message_manager.py
+import asyncio
 import json
 import random
-import logging
-import datetime
-from typing import List, Dict, Any, Optional, AsyncGenerator
-from astrbot.api.all import (
-    AstrBotMessage,
-    MessageType,
-    MessageMember,
-    MessageChain,
-    MessageEventResult,
-)
-from astrbot.api.event import MessageChain
+
+from astrbot.api import logger  # <--- 关键修改：使用官方 Logger 确保能看到日志
+from astrbot.api.all import MessageChain
 from astrbot.api.message_components import Plain
 
-logger = logging.getLogger("message_manager")
+# 引入必要的组件用于手动存档历史记录
+from astrbot.core.agent.message import (
+    AssistantMessageSegment,
+    TextPart,
+    UserMessageSegment,
+)
 
 
 class MessageManager:
     """消息管理器，负责生成和发送各类消息"""
 
     def __init__(self, parent):
-        """初始化消息管理器
-
-        Args:
-            parent: 父插件实例，用于访问上下文
-        """
         self.parent = parent
         self.context = parent.context
 
@@ -35,253 +27,185 @@ class MessageManager:
         user_id: str,
         conversation_id: str,
         unified_msg_origin: str,
-        prompts: List[str],
+        prompts: list[str],
         message_type: str = "一般",
-        time_period: Optional[str] = None,
-        extra_context: Optional[str] = None,
+        time_period: str | None = None,
+        extra_context: str | None = None,
     ):
-        """生成并发送消息
-
-        Args:
-            user_id: 用户ID
-            conversation_id: 会话ID
-            unified_msg_origin: 统一消息来源
-            prompts: 可用的提示词列表
-            message_type: 消息类型描述（用于日志）
-            time_period: 时间段描述（如"早上"、"下午"等）
-            extra_context: 额外的上下文信息
-
-        """
+        """生成并发送消息"""
         try:
-            # 移除针对日常分享的冗余时间间隔检查
-            # # 检查消息间隔时间（如果是随机日常消息）
-            # if message_type.endswith("日常分享"):
-            #     # 获取随机日常模块的配置
-            #     if hasattr(self.parent, 'random_daily'):
-            #         last_time = self.parent.random_daily.last_sharing_time.get(user_id)
-            #         now = datetime.datetime.now()
-                    
-            #         if last_time:
-            #             # 计算距离上次发送经过的分钟数
-            #             minutes_since_last = (now - last_time).total_seconds() / 60
-            #             min_interval = self.parent.random_daily.min_interval_minutes
-                        
-            #             # 如果未达到最小间隔时间，取消发送
-            #             if minutes_since_last < min_interval:
-            #                 logger.info(f"用户 {user_id} 上次消息发送于 {minutes_since_last:.1f} 分钟前，未达到最小间隔 {min_interval} 分钟，取消发送 (冗余检查)")
-            #                 return False # <--- 移除这部分逻辑
-
-            _, _, session_id = self.parse_unified_msg_origin(unified_msg_origin)
-            # 获取对话对象
+            # 1. 获取对话上下文对象
             conversation = await self.context.conversation_manager.get_conversation(
                 unified_msg_origin, conversation_id
             )
 
             if not conversation:
                 logger.error(
-                    f"无法获取用户 {user_id} 的对话，会话ID: {conversation_id} 可能不存在"
+                    f"[主动对话] 无法获取用户 {user_id} 的对话，会话ID: {conversation_id} 可能不存在"
                 )
                 return False
 
-            # 获取对话历史和系统提示
-            system_prompt = "你是一个可爱的AI助手，喜欢和用户互动。"
+            # 2. 准备 System Prompt (人设)
+            system_prompt = ""
+            try:
+                # 优先获取会话绑定人设
+                if conversation and conversation.persona_id:
+                    persona = await self.context.persona_manager.get_persona(
+                        conversation.persona_id
+                    )
+                    if persona:
+                        system_prompt = persona.system_prompt
 
-            # 获取当前对话的人格设置
-            if conversation:
-                persona_id = conversation.persona_id
+                # 回退到全局默认
+                if not system_prompt:
+                    if hasattr(self.context.persona_manager, "get_default_persona_v3"):
+                        default_persona = (
+                            await self.context.persona_manager.get_default_persona_v3(
+                                umo=unified_msg_origin
+                            )
+                        )
+                        if default_persona:
+                            system_prompt = default_persona.get("prompt", "")
 
-                # 获取对话使用的人格设置
-                system_prompt = self._get_system_prompt(persona_id, system_prompt)
+            except Exception as e:
+                logger.warning(f"[主动对话] 获取人设失败: {e}，使用默认设置。")
 
-            # 检查今天是否是特殊节日
-            festival_detector = self.parent.festival_detector if hasattr(self.parent, 'festival_detector') else None
-            festival_prompts = None
-            festival_name = None
-            
-            if festival_detector:
-                festival_prompts = festival_detector.get_festival_prompts()
-                festival_name = festival_detector.get_festival_name()
-            
-            # 如果今天是节日且不是特定消息类型，优先使用节日相关提示词
-            if festival_prompts and message_type not in ["主动消息", "早安", "晚安", "日程安排"]:
-                prompts = festival_prompts
-                logger.info(f"今天是{festival_name}，使用节日相关提示词")
+            if not system_prompt:
+                system_prompt = "你是一个智能AI助手，请根据上下文自然地回复用户。"
 
-            # 随机选择一个提示词
+            # 3. 准备历史记录 (Contexts)
+            history_list = []
+            if conversation and conversation.history:
+                try:
+                    if isinstance(conversation.history, str):
+                        history_list = await asyncio.to_thread(
+                            json.loads, conversation.history
+                        )
+                    else:
+                        history_list = conversation.history
+                except Exception as e:
+                    logger.warning(f"[主动对话] 解析历史记录失败: {e}")
+
+            # 4. 构建提示词 (Prompt)
             prompt = random.choice(prompts)
 
-            # 添加特殊标识，用于识别这是系统提示词而非用户消息
-            # 使用特殊标记 [SYS_PROMPT] 这种格式不会影响LLM，但可以被代码检测到
-            system_marker = "[SYS_PROMPT]"
-            
-            # 调整提示词
-            adjusted_prompt = f"{system_marker} {prompt}"
-            context_requirement = "请确保回复贴合当前的对话上下文情景。" # 新增上下文要求
-
-            # 获取当前时间段的AI日程安排（如果有）
-            ai_schedule = None
-            if hasattr(self.parent, 'ai_schedule') and time_period and message_type != "日程安排":
-                ai_schedule = self.parent.ai_schedule.get_schedule_by_time_period(time_period)
-            
-            # 将AI日程安排融入提示中
-            if ai_schedule:
-                # 如果有额外的上下文，将日程安排添加到额外上下文之前
-                if extra_context:
-                    extra_context = f"根据你今天的日程安排，{time_period}你计划{ai_schedule}。{extra_context}"
-                else:
-                    extra_context = f"根据你今天的日程安排，{time_period}你计划{ai_schedule}。请在对话中自然地融入这个安排，但不要直接告诉用户这是你的日程安排。"
-
-            if festival_name and message_type not in ["主动消息", "日程安排"]:
-                if time_period:
-                    adjusted_prompt = f"{system_marker} {prompt}，今天是{festival_name}，现在是{time_period}，请保持与你的人格设定一致的风格，确保回复符合你的人设特点。{context_requirement}"
-                else:
-                    adjusted_prompt = f"{system_marker} {prompt}，今天是{festival_name}，请保持与你的人格设定一致的风格，确保回复符合你的人设特点。{context_requirement}"
-            elif time_period:
-                adjusted_prompt = f"{system_marker} {prompt}，现在是{time_period}，请保持与你的人格设定一致的风格，确保回复符合你的人设特点。{context_requirement}"
-            else:
-                # 对非节日、非特定时间段的消息也添加上下文要求
-                adjusted_prompt = f"{system_marker} {prompt}，请保持与你的人格设定一致的风格，确保回复符合你的人设特点。{context_requirement}"
-
-            if extra_context:
-                # 将 extra_context 放在通用要求之前，确保其优先被考虑
-                adjusted_prompt = f"{adjusted_prompt.replace(context_requirement, '')} {extra_context} {context_requirement}"
-
-            # 获取LLM工具管理器
-            func_tools_mgr = self.context.get_llm_tool_manager()
-
-            # 调用LLM获取回复
-            logger.info(f"正在为用户 {user_id} 生成{message_type}消息内容...")
-            logger.debug(f"使用的提示词: {adjusted_prompt}")
-
-            platform = self.context.get_platform("aiocqhttp")
-            fake_event = self.create_fake_event(
-                message_str=adjusted_prompt,
-                bot=platform.bot,
-                umo=unified_msg_origin,
-                sender_id=user_id,
-                session_id=session_id,
+            # 节日与时间段逻辑
+            festival_detector = getattr(self.parent, "festival_detector", None)
+            festival_name = (
+                festival_detector.get_festival_name() if festival_detector else None
             )
-            platform.commit_event(fake_event)
-            
-            # 仅在为主动消息类型时添加到标记集合中
-            if message_type == "主动消息":
-                self.parent.dialogue_core.users_received_initiative.add(user_id)
-                
-            return fake_event.request_llm(
-                prompt=adjusted_prompt,
-                func_tool_manager=func_tools_mgr,
-                image_urls=[],
+            festival_prompts = (
+                festival_detector.get_festival_prompts() if festival_detector else None
+            )
+
+            if festival_prompts and message_type not in [
+                "主动消息",
+                "早安",
+                "晚安",
+                "日程安排",
+            ]:
+                prompt = random.choice(festival_prompts)
+                logger.info(f"[主动对话] 今天是{festival_name}，使用节日提示词")
+
+            # 日程注入
+            ai_schedule = None
+            if (
+                hasattr(self.parent, "ai_schedule")
+                and time_period
+                and message_type != "日程安排"
+            ):
+                ai_schedule = self.parent.ai_schedule.get_schedule_by_time_period(
+                    time_period
+                )
+
+            if ai_schedule:
+                schedule_text = (
+                    f"根据你今天的日程安排，{time_period}你计划{ai_schedule}。"
+                )
+                extra_context = f"{schedule_text} {extra_context or ''}"
+
+            # 组合最终提示词
+            # 注意：这里的 prompt 是给 LLM 看的指令，不是发给用户的
+            context_requirement = "请确保回复贴合当前的对话上下文情景。"
+            base_prompt = f"[系统指令: {prompt}]"  # 标记为系统指令
+
+            if festival_name:
+                final_prompt = f"{base_prompt}，今天是{festival_name}。{extra_context or ''} {context_requirement}"
+            elif time_period:
+                final_prompt = f"{base_prompt}，现在是{time_period}。{extra_context or ''} {context_requirement}"
+            else:
+                final_prompt = (
+                    f"{base_prompt}。{extra_context or ''} {context_requirement}"
+                )
+
+            logger.info(
+                f"[主动对话] 正在为 {user_id} 生成 [{message_type}] 消息 (历史记录: {len(history_list)}条)..."
+            )
+
+            # 5. 调用 LLM 生成
+            provider_id = await self.context.get_current_chat_provider_id(
+                unified_msg_origin
+            )
+
+            llm_response = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=final_prompt,
                 system_prompt=system_prompt,
+                contexts=history_list,
                 conversation=conversation,
             )
+
+            # 6. 发送与存档
+            if llm_response and llm_response.completion_text:
+                response_text = llm_response.completion_text
+
+                # --- 发送消息 ---
+                await self.context.send_message(
+                    unified_msg_origin, MessageChain([Plain(response_text)])
+                )
+                logger.info(f"[主动对话] 消息已发送: {response_text[:20]}...")
+
+                # --- 核心修复：手动存入历史记录 ---
+                try:
+                    # 构造要存入数据库的消息对象
+                    # 我们把 Prompt 存为 User 消息，把回复存为 Assistant 消息
+                    # 这样下次 LLM 生成时就能看到这个上下文了
+                    user_msg_obj = UserMessageSegment(
+                        content=[TextPart(text=final_prompt)]
+                    )
+                    assistant_msg_obj = AssistantMessageSegment(
+                        content=[TextPart(text=response_text)]
+                    )
+
+                    await self.context.conversation_manager.add_message_pair(
+                        cid=conversation_id,
+                        user_message=user_msg_obj,
+                        assistant_message=assistant_msg_obj,
+                    )
+                    logger.debug("[主动对话] 历史记录已存档。")
+                except Exception as e:
+                    logger.error(f"[主动对话] 存档历史记录失败: {e}")
+
+                # 标记状态
+                if message_type == "主动消息":
+                    self.parent.dialogue_core.users_received_initiative.add(user_id)
+
+                return True
+            else:
+                logger.warning("[主动对话] LLM 生成内容为空。")
+                return False
 
         except Exception as e:
             import traceback
 
-            error_traceback = traceback.format_exc()
-            logger.error(
-                f"发送{message_type}消息时发生错误: {str(e)}\n{error_traceback}"
-            )
-            return
+            logger.error(f"[主动对话] 执行异常: {str(e)}\n{traceback.format_exc()}")
+            return False
 
     def parse_unified_msg_origin(self, unified_msg_origin: str):
-        """解析统一消息来源
-
-        格式: platform_name:message_type:session_id
-        """
         try:
             parts = unified_msg_origin.split(":")
-            if len(parts) != 3:
-                raise ValueError("统一消息来源格式错误")
-
-            platform_name = parts[0]
-            message_type = parts[1]
-            session_id = parts[2]
-
-            return platform_name, message_type, session_id
-        except Exception as e:
-            logger.error(f"解析统一消息来源时发生错误: {str(e)}")
+            if len(parts) >= 3:
+                return parts[0], parts[1], ":".join(parts[2:])
             return None, None, None
-
-    def create_fake_event(
-        self,
-        message_str: str,
-        bot,
-        umo: str,
-        session_id: str,
-        sender_id: str = "123456",
-    ):
-        from astrbot.core.platform.platform_metadata import PlatformMetadata
-        from .aiocqhttp_message_event import AiocqhttpMessageEvent
-
-        # 使用配置中的self_id
-        self_id = self.parent.config.get("self_id", "")
-        if not self_id:
-            logger.warning("配置中未设置self_id，使用默认值，可能会导致异常")
-            self_id = sender_id
-
-        abm = AstrBotMessage()
-        abm.message_str = message_str
-        abm.message = [Plain(message_str)]
-        abm.self_id = self_id  # 使用配置中的self_id
-        abm.sender = MessageMember(user_id=sender_id)
-
-        if "group" in umo.lower():
-            # 群消息
-            group_id = umo.split("_")[-1] if "_" in umo else sender_id
-            abm.raw_message = {
-                "message_type": "group",
-                "group_id": int(group_id),
-                "user_id": int(sender_id),
-                "message": message_str,
-            }
-        else:
-            # 私聊消息
-            abm.raw_message = {
-                "message_type": "private",
-                "user_id": int(sender_id),
-                "message": message_str,
-            }
-
-        abm.session_id = session_id
-        abm.type = MessageType.FRIEND_MESSAGE
-
-        meta = PlatformMetadata("aiocqhttp", "fake_adapter")
-        event = AiocqhttpMessageEvent(
-            message_str=message_str,
-            message_obj=abm,
-            platform_meta=meta,
-            session_id=session_id,
-            bot=bot,
-        )
-        event.is_wake = True
-        event.call_llm = False
-
-        return event
-
-    def _get_system_prompt(self, persona_id: Optional[str], default_prompt: str) -> str:
-        """获取系统提示词
-
-        Args:
-            persona_id: 人格ID
-            default_prompt: 默认提示词
-
-        Returns:
-            str: 系统提示词
-        """
-        try:
-            if persona_id is None:
-                # 使用默认人格
-                default_persona = self.context.provider_manager.selected_default_persona
-                if default_persona:
-                    return default_persona.get("prompt", default_prompt)
-            elif persona_id != "[%None]":
-                # 使用指定人格
-                personas = self.context.provider_manager.personas
-                for persona in personas:
-                    if persona.get("id") == persona_id:
-                        return persona.get("prompt", default_prompt)
-        except Exception as e:
-            logger.error(f"获取人格信息时出错: {str(e)}")
-
-        return default_prompt
+        except Exception:
+            return None, None, None

@@ -2,16 +2,14 @@
 
 import asyncio
 import datetime
-import logging
-from typing import Dict, Any, Set
+from typing import Any
 
-from ..utils.message_manager import MessageManager
-from ..utils.user_manager import UserManager
-from ..utils.task_manager import TaskManager
+from astrbot.api import logger
+
 from ..utils.config_manager import ConfigManager
-
-# 配置日志
-logger = logging.getLogger("random_daily_activities")
+from ..utils.message_manager import MessageManager
+from ..utils.task_manager import TaskManager
+from ..utils.user_manager import UserManager
 
 
 class RandomDailyActivities:
@@ -31,13 +29,15 @@ class RandomDailyActivities:
 
         # 功能总开关 - 默认启用
         self.enabled = True
-        
+
         # 日常分享配置
         sharing_config = module_config.get("daily_sharing", {})
         self.sharing_enabled = sharing_config.get("enabled", True)
         self.min_interval_minutes = sharing_config.get("min_interval_minutes", 180)
-        self.sharing_max_delay_seconds = sharing_config.get("sharing_max_delay_seconds", 600)
-        
+        self.sharing_max_delay_seconds = sharing_config.get(
+            "sharing_max_delay_seconds", 600
+        )
+
         # 从time_settings获取时间限制配置，与主动对话模块保持一致
         time_settings = self.config_manager.get_module_config("time_settings")
         self.time_limit_enabled = time_settings.get("time_limit_enabled", True)
@@ -66,7 +66,7 @@ class RandomDailyActivities:
                 "请向用户描述你下午的一个小感悟或想法，内容要符合当前时间(下午13-17点)，保持符合你的人设特点。请确保回复贴合当前的对话上下文情景。",
             ],
             "晚饭": [
-               "现在是晚饭时间。请判断这是否是今天你第一次和该用户讨论晚饭。如果是第一次，请从以下四个话题中随机选择一个展开对话：[询问用户晚餐打算吃什么/有什么安排, 分享你自己的晚餐想法/喜欢的菜品, 邀请用户一起享用晚餐/询问口味, 提醒用户该吃晚饭了/询问是否已吃]。如果不是第一次讨论晚饭，请根据之前的晚饭对话内容，自然地延续话题。请始终保持你的人设特点，并确保回复贴合当前的对话上下文情景。"
+                "现在是晚饭时间。请判断这是否是今天你第一次和该用户讨论晚饭。如果是第一次，请从以下四个话题中随机选择一个展开对话：[询问用户晚餐打算吃什么/有什么安排, 分享你自己的晚餐想法/喜欢的菜品, 邀请用户一起享用晚餐/询问口味, 提醒用户该吃晚饭了/询问是否已吃]。如果不是第一次讨论晚饭，请根据之前的晚饭对话内容，自然地延续话题。请始终保持你的人设特点，并确保回复贴合当前的对话上下文情景。"
             ],
             "晚上": [
                 "请向用户描述你晚上的一个放松方式，内容要符合当前时间(晚上19-23点)，保持符合你的人设特点。请确保回复贴合当前的对话上下文情景。",
@@ -95,21 +95,21 @@ class RandomDailyActivities:
         self.task_manager = TaskManager(parent)
 
         logger.info(
-            f"随机日常模块初始化完成，状态：{'启用' if self.enabled else '禁用'}, " +
-            f"时间限制: {'启用' if self.time_limit_enabled else '禁用'} " +
-            f"({self.activity_start_hour}:00-{self.activity_end_hour}:00)"
+            f"随机日常模块初始化完成，状态：{'启用' if self.enabled else '禁用'}, "
+            + f"时间限制: {'启用' if self.time_limit_enabled else '禁用'} "
+            + f"({self.activity_start_hour}:00-{self.activity_end_hour}:00)"
         )
 
-    def get_data(self) -> Dict[str, Any]:
+    def get_data(self) -> dict[str, Any]:
         """获取需要持久化的数据"""
-        return {
-            "last_sharing_time": self.last_sharing_time
-        }
+        return {"last_sharing_time": self.last_sharing_time}
 
-    def set_data(self, data: Dict[str, Any]) -> None:
+    def set_data(self, data: dict[str, Any]) -> None:
         """从持久化存储恢复数据"""
         self.last_sharing_time = data.get("last_sharing_time", {})
-        logger.info(f"已加载随机日常数据，共有 {len(self.last_sharing_time)} 条上次分享时间记录")
+        logger.info(
+            f"已加载随机日常数据，共有 {len(self.last_sharing_time)} 条上次分享时间记录"
+        )
 
     async def start(self):
         """启动随机日常任务"""
@@ -157,18 +157,23 @@ class RandomDailyActivities:
         except Exception as e:
             logger.error(f"随机日常检查循环发生错误: {str(e)}")
             import traceback
+
             logger.error(traceback.format_exc())
 
     async def _check_daily_sharing(self):
         """检查是否需要发送日常分享消息"""
         try:
             now = datetime.datetime.now()
-            
+
             # 检查是否在允许的活动时间范围内
             if self.time_limit_enabled:
                 current_hour = now.hour
-                if not (self.activity_start_hour <= current_hour < self.activity_end_hour):
-                    logger.debug(f"当前时间 {current_hour}:00 不在活动时间范围内 ({self.activity_start_hour}:00-{self.activity_end_hour}:00)，跳过日常分享")
+                if not (
+                    self.activity_start_hour <= current_hour < self.activity_end_hour
+                ):
+                    logger.debug(
+                        f"当前时间 {current_hour}:00 不在活动时间范围内 ({self.activity_start_hour}:00-{self.activity_end_hour}:00)，跳过日常分享"
+                    )
                     return
 
             # 获取当前时间段名称 - 更新时间段定义
@@ -225,12 +230,14 @@ class RandomDailyActivities:
                     minutes_since_last = (now - last_time).total_seconds() / 60
                     if minutes_since_last < self.min_interval_minutes:
                         # 未达到最小间隔，跳过（双重检查）
-                        logger.debug(f"用户 {user_id} 上次消息发送于 {minutes_since_last:.1f} 分钟前，未达到最小间隔 {self.min_interval_minutes} 分钟，跳过")
+                        logger.debug(
+                            f"用户 {user_id} 上次消息发送于 {minutes_since_last:.1f} 分钟前，未达到最小间隔 {self.min_interval_minutes} 分钟，跳过"
+                        )
                         continue
-                
+
                 # 直接发送消息，不再考虑概率
                 self.last_sharing_time[user_id] = now
-                
+
                 # 决定发送，为用户安排立即发送消息
                 prompts = self.time_period_prompts.get(time_period, [])
                 if not prompts:
@@ -254,6 +261,7 @@ class RandomDailyActivities:
         except Exception as e:
             logger.error(f"检查日常分享任务时发生错误: {str(e)}")
             import traceback
+
             logger.error(traceback.format_exc())
 
     async def _send_scheduled_message(

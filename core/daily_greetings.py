@@ -2,17 +2,13 @@
 
 import asyncio
 import datetime
-import logging
-import random
-from typing import Dict, Any, Set, List
+from astrbot.api import logger
 
-from ..utils.message_manager import MessageManager
-from ..utils.user_manager import UserManager
-from ..utils.task_manager import TaskManager
 from ..utils.config_manager import ConfigManager
 from ..utils.get_weather import get_weather_info
-# 配置日志
-logger = logging.getLogger("daily_greetings")
+from ..utils.message_manager import MessageManager
+from ..utils.task_manager import TaskManager
+from ..utils.user_manager import UserManager
 
 
 class DailyGreetings:
@@ -29,7 +25,9 @@ class DailyGreetings:
         # 加载配置
         self.config_manager = ConfigManager(parent.config)
         module_config = self.config_manager.get_module_config("daily_greetings")
-        tools_module_config = self.config_manager.get_module_config("tools_api_keySettings")
+        tools_module_config = self.config_manager.get_module_config(
+            "tools_api_keySettings"
+        )
 
         # 功能总开关
         self.enabled = module_config.get("enabled", False)
@@ -38,7 +36,7 @@ class DailyGreetings:
         self.morning_hour = module_config.get("morning_hour", 8)
         self.morning_minute = module_config.get("morning_minute", 0)
         self.morning_max_delay = module_config.get("morning_max_delay", 30)
-        
+
         # 晚安问候配置
         self.night_hour = module_config.get("night_hour", 23)
         self.night_minute = module_config.get("night_minute", 0)
@@ -47,13 +45,13 @@ class DailyGreetings:
         # 工具类参数及开关配置
         # 加载天气相关配置
         self.weather_api_key = tools_module_config.get("weather_api_key", None)
-        self.location = tools_module_config.get("weather_location","beijing")
+        self.location = tools_module_config.get("weather_location", "beijing")
         self.weather_get = tools_module_config.get("weather_get", False)
 
         # 记录是否已经触发当天的早晚安任务
         self.morning_triggered = False
         self.night_triggered = False
-        
+
         # 选择用户配置
         self.user_selection_ratio = 0.4
         self.min_selected_users = 1
@@ -138,19 +136,37 @@ class DailyGreetings:
                 # 1. 检查是否到了早晨问候时间
                 if not self.morning_triggered:
                     # 判断是否达到设定的早安时间
-                    if (current_hour == self.morning_hour and current_minute >= self.morning_minute) or \
-                       (current_hour > self.morning_hour and current_hour < self.morning_hour + 2):
-                        logger.info(f"触发早安问候任务，当前时间: {current_hour}:{current_minute}")
+                    if (
+                        current_hour == self.morning_hour
+                        and current_minute >= self.morning_minute
+                    ) or (
+                        current_hour > self.morning_hour
+                        and current_hour < self.morning_hour + 2
+                    ):
+                        logger.info(
+                            f"触发早安问候任务，当前时间: {current_hour}:{current_minute}"
+                        )
                         await self._check_greeting_time("morning")
                         self.morning_triggered = True
 
                 # 2. 检查是否到了晚安问候时间
                 if not self.night_triggered:
                     # 判断是否达到设定的晚安时间
-                    if (current_hour == self.night_hour and current_minute >= self.night_minute) or \
-                       (current_hour > self.night_hour) or \
-                       (self.night_hour == 23 and current_hour == 0 and current_minute < self.night_minute):
-                        logger.info(f"触发晚安问候任务，当前时间: {current_hour}:{current_minute}")
+                    if (
+                        (
+                            current_hour == self.night_hour
+                            and current_minute >= self.night_minute
+                        )
+                        or (current_hour > self.night_hour)
+                        or (
+                            self.night_hour == 23
+                            and current_hour == 0
+                            and current_minute < self.night_minute
+                        )
+                    ):
+                        logger.info(
+                            f"触发晚安问候任务，当前时间: {current_hour}:{current_minute}"
+                        )
                         await self._check_greeting_time("night")
                         self.night_triggered = True
 
@@ -163,6 +179,7 @@ class DailyGreetings:
         except Exception as e:
             logger.error(f"每日问候检查循环发生错误: {str(e)}")
             import traceback
+
             logger.error(traceback.format_exc())
 
     async def _check_greeting_time(self, greeting_type: str):
@@ -226,7 +243,7 @@ class DailyGreetings:
         conversation_id: str,
         unified_msg_origin: str,
         greeting_type: str,
-        prompts: List[str],
+        prompts: list[str],
     ):
         """发送问候消息
 
@@ -252,32 +269,39 @@ class DailyGreetings:
             time_period = "晚上"
         else:
             time_period = "深夜"
-        
 
         # 检查今天是否是特殊节日
-        festival_detector = self.parent.festival_detector if hasattr(self.parent, 'festival_detector') else None
+        festival_detector = (
+            self.parent.festival_detector
+            if hasattr(self.parent, "festival_detector")
+            else None
+        )
         festival_name = None
-        
+
         if festival_detector:
             festival_name = festival_detector.get_festival_name()
-            
+
         # 如果是节日，调整问候语
-        extra_context = None
+        extra_context = ""
         if festival_name:
             if greeting_type == "早安":
                 extra_context = f"今天是{festival_name}，请在早安问候中加入节日祝福"
             elif greeting_type == "晚安":
                 extra_context = f"今天是{festival_name}，请在晚安问候中加入节日祝福"
-        
-         # 检测是否需要添加天气提醒
-        if self.weather_get == True:
-            if time_period =="早上" or time_period =="下午":
-                weather_onfo = await get_weather_info(self.weather_api_key, self.location)
+
+        # 检测是否需要添加天气提醒
+        if self.weather_get:
+            if time_period == "早上" or time_period == "下午":
+                weather_onfo = await get_weather_info(
+                    self.weather_api_key, self.location
+                )
                 weather_text = weather_onfo[0]
                 temperature = weather_onfo[1]
                 location_path = weather_onfo[2]
-                extra_context = extra_context + f"位置{location_path}现在的天气是{weather_text}，温度是{temperature}°C"
-
+                extra_context = (
+                    extra_context
+                    + f"位置{location_path}现在的天气是{weather_text}，温度是{temperature}°C"
+                )
 
         # 使用消息管理器发送消息
         await self.message_manager.generate_and_send_message(

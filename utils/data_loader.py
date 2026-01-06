@@ -3,8 +3,9 @@
 import asyncio
 import datetime
 import json
+from typing import Any
+
 from astrbot.api import logger
-from typing import Dict, Any
 
 
 class DataLoader:
@@ -33,7 +34,7 @@ class DataLoader:
     def load_data_from_storage(self) -> None:
         try:
             if self.data_file.exists():
-                with open(self.data_file, "r", encoding="utf-8") as f:
+                with open(self.data_file, encoding="utf-8") as f:
                     stored_data = json.load(f)
 
                     # 处理时间戳转换 (user_records)
@@ -50,7 +51,7 @@ class DataLoader:
                                     )
                                 except ValueError:
                                     record["timestamp"] = datetime.datetime.now()
-                    
+
                     # 处理时间戳转换 (last_initiative_messages)
                     if "last_initiative_messages" in stored_data:
                         for user_id, record in stored_data[
@@ -67,26 +68,47 @@ class DataLoader:
                                     )
                                 except ValueError:
                                     record["timestamp"] = datetime.datetime.now()
-                    
+
                     # 处理时间戳转换 (last_initiative_types)
                     if "last_initiative_types" in stored_data:
-                        for user_id, record in stored_data["last_initiative_types"].items():
-                            if "timestamp" in record and isinstance(record["timestamp"], str):
+                        for user_id, record in stored_data[
+                            "last_initiative_types"
+                        ].items():
+                            if "timestamp" in record and isinstance(
+                                record["timestamp"], str
+                            ):
                                 try:
-                                    record["timestamp"] = datetime.datetime.fromisoformat(record["timestamp"])
+                                    record["timestamp"] = (
+                                        datetime.datetime.fromisoformat(
+                                            record["timestamp"]
+                                        )
+                                    )
                                 except ValueError:
                                     record["timestamp"] = datetime.datetime.now()
-                                    
+
                     # 处理时间戳转换 (random_daily_data - last_sharing_time)
-                    if "random_daily_data" in stored_data and "last_sharing_time" in stored_data["random_daily_data"]:
-                        for user_id, timestamp_str in stored_data["random_daily_data"]["last_sharing_time"].items():
+                    if (
+                        "random_daily_data" in stored_data
+                        and "last_sharing_time" in stored_data["random_daily_data"]
+                    ):
+                        for user_id, timestamp_str in stored_data["random_daily_data"][
+                            "last_sharing_time"
+                        ].items():
                             if isinstance(timestamp_str, str):
                                 try:
-                                    stored_data["random_daily_data"]["last_sharing_time"][user_id] = datetime.datetime.fromisoformat(timestamp_str)
+                                    stored_data["random_daily_data"][
+                                        "last_sharing_time"
+                                    ][user_id] = datetime.datetime.fromisoformat(
+                                        timestamp_str
+                                    )
                                 except ValueError:
                                     # 如果转换失败，可以记录错误或使用默认值，这里使用当前时间
-                                    logger.warning(f"无法解析用户 {user_id} 的 last_sharing_time: {timestamp_str}，将使用当前时间")
-                                    stored_data["random_daily_data"]["last_sharing_time"][user_id] = datetime.datetime.now()
+                                    logger.warning(
+                                        f"无法解析用户 {user_id} 的 last_sharing_time: {timestamp_str}，将使用当前时间"
+                                    )
+                                    stored_data["random_daily_data"][
+                                        "last_sharing_time"
+                                    ][user_id] = datetime.datetime.now()
 
                     # 传递所有数据给对话核心
                     self.dialogue_core.set_data(
@@ -97,37 +119,52 @@ class DataLoader:
                         users_received_initiative=set(
                             stored_data.get("users_received_initiative", [])
                         ),
-                        consecutive_message_count=stored_data.get("consecutive_message_count", {}),
-                        last_initiative_types=stored_data.get("last_initiative_types", {})
+                        consecutive_message_count=stored_data.get(
+                            "consecutive_message_count", {}
+                        ),
+                        last_initiative_types=stored_data.get(
+                            "last_initiative_types", {}
+                        ),
                     )
-                    
+
                     # 传递数据给随机日常模块
-                    if hasattr(self.plugin, 'random_daily') and "random_daily_data" in stored_data:
-                        self.plugin.random_daily.set_data(stored_data["random_daily_data"])
-                        
+                    if (
+                        hasattr(self.plugin, "random_daily")
+                        and "random_daily_data" in stored_data
+                    ):
+                        self.plugin.random_daily.set_data(
+                            stored_data["random_daily_data"]
+                        )
+
                     # 传递数据给AI日程安排模块
-                    if hasattr(self.plugin, 'ai_schedule') and "ai_schedule_data" in stored_data:
-                        self.plugin.ai_schedule.set_data(stored_data["ai_schedule_data"])
-                        
+                    if (
+                        hasattr(self.plugin, "ai_schedule")
+                        and "ai_schedule_data" in stored_data
+                    ):
+                        self.plugin.ai_schedule.set_data(
+                            stored_data["ai_schedule_data"]
+                        )
+
             logger.info(f"成功从 {self.data_file} 加载用户数据")
         except Exception as e:
             logger.error(f"从存储加载数据时发生错误: {str(e)}")
             import traceback
+
             logger.error(traceback.format_exc())
 
     def save_data_to_storage(self) -> None:
         """将数据保存到本地存储"""
         try:
             core_data = self.dialogue_core.get_data()
-            
+
             # 获取随机日常模块的数据
             random_daily_data = {}
-            if hasattr(self.plugin, 'random_daily'):
+            if hasattr(self.plugin, "random_daily"):
                 random_daily_data = self.plugin.random_daily.get_data()
-                
+
             # 获取AI日程安排模块的数据
             ai_schedule_data = {}
-            if hasattr(self.plugin, 'ai_schedule'):
+            if hasattr(self.plugin, "ai_schedule"):
                 ai_schedule_data = self.plugin.ai_schedule.get_data()
 
             data_to_save = {
@@ -140,17 +177,23 @@ class DataLoader:
                 "users_received_initiative": list(
                     core_data.get("users_received_initiative", [])
                 ),
-                "consecutive_message_count": core_data.get("consecutive_message_count", {}),
+                "consecutive_message_count": core_data.get(
+                    "consecutive_message_count", {}
+                ),
                 "last_initiative_types": self._prepare_records_for_save(
                     core_data.get("last_initiative_types", {})
                 ),
-                "random_daily_data": self._prepare_records_for_save(random_daily_data), # 保存随机日常数据
-                "ai_schedule_data": self._prepare_records_for_save(ai_schedule_data)  # 保存AI日程安排数据
+                "random_daily_data": self._prepare_records_for_save(
+                    random_daily_data
+                ),  # 保存随机日常数据
+                "ai_schedule_data": self._prepare_records_for_save(
+                    ai_schedule_data
+                ),  # 保存AI日程安排数据
             }
 
             # 确保数据目录存在
             self.data_file.parent.mkdir(exist_ok=True)
-            
+
             with open(self.data_file, "w", encoding="utf-8") as f:
                 json.dump(data_to_save, f, ensure_ascii=False, indent=2)
 
@@ -158,16 +201,19 @@ class DataLoader:
         except Exception as e:
             logger.error(f"保存数据到存储时发生错误: {str(e)}")
             import traceback
+
             logger.error(traceback.format_exc())
 
-    def _prepare_records_for_save(self, records: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_records_for_save(self, records: dict[str, Any]) -> dict[str, Any]:
         """准备记录以便保存，将datetime对象转换为ISO格式字符串"""
         prepared_records = {}
 
         # 检查 records 是否为字典
         if not isinstance(records, dict):
-            logger.warning(f"_prepare_records_for_save 接收到的 records 不是字典: {type(records)}")
-            return prepared_records # 或者根据情况返回 records 本身
+            logger.warning(
+                f"_prepare_records_for_save 接收到的 records 不是字典: {type(records)}"
+            )
+            return prepared_records  # 或者根据情况返回 records 本身
 
         for key, value in records.items():
             # 如果值是字典，递归处理

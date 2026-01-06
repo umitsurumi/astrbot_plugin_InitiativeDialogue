@@ -1,6 +1,6 @@
-import aiohttp
 import asyncio
 
+import aiohttp
 
 
 async def get_weather_info(weather_api_key, location):
@@ -30,11 +30,12 @@ async def get_weather_info(weather_api_key, location):
             data = await response.json()
 
     # 提取所需信息
-    weather_text = data['results'][0]['now']['text']
-    temperature = data['results'][0]['now']['temperature']
-    location_path = data['results'][0]['location']['path']
+    weather_text = data["results"][0]["now"]["text"]
+    temperature = data["results"][0]["now"]["temperature"]
+    location_path = data["results"][0]["location"]["path"]
 
     return weather_text, temperature, location_path
+
 
 if __name__ == "__main__":
     # 测试代码

@@ -1,16 +1,16 @@
 # 配置管理器 - 处理配置加载和验证
 
-import logging
-from typing import Dict, Any, Optional, TypeVar, Generic, Union, List
+from typing import Any, TypeVar
+
+from astrbot.api import logger
 
 T = TypeVar("T")
-logger = logging.getLogger("config_manager")
 
 
 class ConfigManager:
     """配置管理器，用于加载和管理各种配置"""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         """初始化配置管理器
 
         Args:
@@ -18,7 +18,7 @@ class ConfigManager:
         """
         self.config = config
 
-    def get_module_config(self, module_name: str) -> Dict[str, Any]:
+    def get_module_config(self, module_name: str) -> dict[str, Any]:
         """获取指定模块的配置
 
         Args:
@@ -29,7 +29,7 @@ class ConfigManager:
         """
         return self.config.get(module_name, {})
 
-    def get_value(self, path: str, default: T = None) -> Union[T, Any]:
+    def get_value(self, path: str, default: T = None) -> T | Any:
         """获取指定路径的配置值
 
         Args:
@@ -52,7 +52,7 @@ class ConfigManager:
             logger.error(f"获取配置值 {path} 时出错: {str(e)}")
             return default
 
-    def validate_config(self, requirements: Dict[str, Dict[str, Any]]) -> List[str]:
+    def validate_config(self, requirements: dict[str, dict[str, Any]]) -> list[str]:
         """验证配置是否满足要求
 
         Args:

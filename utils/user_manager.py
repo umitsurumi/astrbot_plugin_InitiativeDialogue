@@ -1,10 +1,8 @@
 # 用户管理器 - 处理用户选择和筛选逻辑
 
+from astrbot.api import logger
 import random
-import logging
-from typing import List, Dict, Any, Set, Tuple
-
-logger = logging.getLogger("user_manager")
+from typing import Any
 
 
 class UserManager:
@@ -18,15 +16,14 @@ class UserManager:
         """
         self.parent = parent
 
-
     @property
     def dialogue_core(self):
         """延迟获取dialogue_core属性"""
         return self.parent.dialogue_core
 
     def get_eligible_users(
-        self, excluded_users: Set[str]
-    ) -> List[Tuple[str, Dict[str, Any]]]:
+        self, excluded_users: set[str]
+    ) -> list[tuple[str, dict[str, Any]]]:
         """获取符合条件的用户（未在排除集合中且在白名单内）
 
         Args:
@@ -88,10 +85,10 @@ class UserManager:
 
     def select_random_users(
         self,
-        eligible_users: List[Tuple[str, Dict[str, Any]]],
+        eligible_users: list[tuple[str, dict[str, Any]]],
         selection_ratio: float = 0.3,
         min_count: int = 1,
-    ) -> List[Tuple[str, Dict[str, Any]]]:
+    ) -> list[tuple[str, dict[str, Any]]]:
         """从符合条件的用户中随机选择一部分
 
         Args:
