@@ -1,9 +1,9 @@
-# 修复版 v3 (最终版): astrbot_plugin_initiativedialogue/utils/message_manager.py
 import asyncio
 import json
 import random
+import re
 
-from astrbot.api import logger  # <--- 关键修改：使用官方 Logger 确保能看到日志
+from astrbot.api import logger  # 使用官方 Logger 打印日志
 from astrbot.api.all import MessageChain
 from astrbot.api.message_components import Plain
 
@@ -22,6 +22,43 @@ class MessageManager:
         self.parent = parent
         self.context = parent.context
 
+    def _split_text(self, text: str) -> list[str]:
+        """
+        [新增] 文本分段逻辑
+        根据标点符号拆分文本，避免一大坨文字直接糊用户脸上
+        """
+        # 如果文本很短（比如少于10个字），就不分段了，直接发
+        if len(text) < 10:
+            return [text]
+
+        # 正则解释：非贪婪匹配直到遇到 句号/问号/感叹号/波浪号/省略号/换行符，或者直接匹配到字符串结尾
+        regex_pattern = r".*?[。？！~…\n]+|.+$"
+        try:
+            segments = re.findall(
+                regex_pattern,
+                text,
+                re.DOTALL | re.MULTILINE,
+            )
+            # 过滤掉空字符串和纯空白字符
+            return [seg.strip() for seg in segments if seg.strip()]
+        except Exception:
+            # 如果正则炸了，保底返回原文本
+            return [text]
+
+    async def _simulate_typing_delay(self, text_segment: str):
+        """
+        [新增] 模拟打字延迟
+        根据字数计算等待时间，让连续消息更自然
+        """
+        # 基础延迟 1秒 + 每个字 0.1秒
+        delay = 1.0 + len(text_segment) * 0.1
+        # 限制最大延迟 5秒，防止用户等太久
+        delay = min(delay, 5.0)
+        # 稍微加一点点随机波动
+        delay += random.uniform(0, 0.5)
+
+        await asyncio.sleep(delay)
+
     async def generate_and_send_message(
         self,
         user_id: str,
@@ -34,7 +71,7 @@ class MessageManager:
     ):
         """生成并发送消息"""
         try:
-            # 1. 获取对话上下文对象
+            # 1. 获取对话上下文
             conversation = await self.context.conversation_manager.get_conversation(
                 unified_msg_origin, conversation_id
             )
@@ -73,7 +110,7 @@ class MessageManager:
             if not system_prompt:
                 system_prompt = "你是一个智能AI助手，请根据上下文自然地回复用户。"
 
-            # 3. 准备历史记录 (Contexts)
+            # 3. 准备历史记录
             history_list = []
             if conversation and conversation.history:
                 try:
@@ -86,10 +123,10 @@ class MessageManager:
                 except Exception as e:
                     logger.warning(f"[主动对话] 解析历史记录失败: {e}")
 
-            # 4. 构建提示词 (Prompt)
+            # 4. 构建提示词
             prompt = random.choice(prompts)
 
-            # 节日与时间段逻辑
+            # 节日/时间段/日程逻辑
             festival_detector = getattr(self.parent, "festival_detector", None)
             festival_name = (
                 festival_detector.get_festival_name() if festival_detector else None
@@ -127,7 +164,7 @@ class MessageManager:
             # 组合最终提示词
             # 注意：这里的 prompt 是给 LLM 看的指令，不是发给用户的
             context_requirement = "请确保回复贴合当前的对话上下文情景。"
-            base_prompt = f"[系统指令: {prompt}]"  # 标记为系统指令
+            base_prompt = f"[系统指令: {prompt}]"
 
             if festival_name:
                 final_prompt = f"{base_prompt}，今天是{festival_name}。{extra_context or ''} {context_requirement}"
@@ -138,11 +175,9 @@ class MessageManager:
                     f"{base_prompt}。{extra_context or ''} {context_requirement}"
                 )
 
-            logger.info(
-                f"[主动对话] 正在为 {user_id} 生成 [{message_type}] 消息 (历史记录: {len(history_list)}条)..."
-            )
+            logger.info(f"[主动对话] 正在为 {user_id} 生成 [{message_type}] 消息...")
 
-            # 5. 调用 LLM 生成
+            # 5. 调用 LLM
             provider_id = await self.context.get_current_chat_provider_id(
                 unified_msg_origin
             )
@@ -155,26 +190,34 @@ class MessageManager:
                 conversation=conversation,
             )
 
-            # 6. 发送与存档
+            # 6. 处理回复（分段发送 & 统一存档）
             if llm_response and llm_response.completion_text:
-                response_text = llm_response.completion_text
+                full_response_text = llm_response.completion_text.strip()
 
-                # --- 发送消息 ---
-                await self.context.send_message(
-                    unified_msg_origin, MessageChain([Plain(response_text)])
-                )
-                logger.info(f"[主动对话] 消息已发送: {response_text[:20]}...")
+                # --- 分段发送逻辑 ---
+                segments = self._split_text(full_response_text)
+                logger.info(f"[主动对话] 将发送 {len(segments)} 条分段消息。")
 
-                # --- 核心修复：手动存入历史记录 ---
+                for i, seg in enumerate(segments):
+                    # 发送当前片段
+                    await self.context.send_message(
+                        unified_msg_origin, MessageChain([Plain(seg)])
+                    )
+
+                    # 如果不是最后一段，则等待一下，模拟打字
+                    if i < len(segments) - 1:
+                        await self._simulate_typing_delay(seg)
+
+                logger.info("[主动对话] 所有消息发送完毕。")
+
+                # --- 存档逻辑 (存完整的一条) ---
                 try:
-                    # 构造要存入数据库的消息对象
-                    # 我们把 Prompt 存为 User 消息，把回复存为 Assistant 消息
-                    # 这样下次 LLM 生成时就能看到这个上下文了
                     user_msg_obj = UserMessageSegment(
                         content=[TextPart(text=final_prompt)]
                     )
+                    # 注意：这里存的是 full_response_text，保证历史记录的完整性
                     assistant_msg_obj = AssistantMessageSegment(
-                        content=[TextPart(text=response_text)]
+                        content=[TextPart(text=full_response_text)]
                     )
 
                     await self.context.conversation_manager.add_message_pair(
@@ -182,7 +225,7 @@ class MessageManager:
                         user_message=user_msg_obj,
                         assistant_message=assistant_msg_obj,
                     )
-                    logger.debug("[主动对话] 历史记录已存档。")
+                    logger.debug("[主动对话] 完整对话历史已存档。")
                 except Exception as e:
                     logger.error(f"[主动对话] 存档历史记录失败: {e}")
 
